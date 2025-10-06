@@ -10,22 +10,17 @@ public class GrappleAbilitySO : AbilitySO
     public float castOriginYOffset = 0.15f;
     public bool showPreviewOnMiss = true;
 
-    [Header("Pull (phase dâ€™attraction)")]
-    public float pullAcceleration = 60f;         // NÂ·s/kg
-    public float maxPullSpeed = 18f;
-    [Range(0f, 1f)] public float lateralDamping = 0.25f;
-    public float snapDistance = 0.4f;
-    public float gravityDuringPull = 0.2f;
-
-    [Header("SÃ©curitÃ© / Stop")]
-    public float maxPullDuration = 1.75f;
-    public float maxNoProgressTime = 0.25f;
-    public bool cancelIfLineBlocked = true;
+    [Header("Pull (phase d’attraction)")]
+    public float pullAcceleration = 60f;         // N·s/kg (Impulse * dt)
+    public float maxPullSpeed = 18f;             // clamp de la vitesse vers l’ancre
+    [Range(0f, 1f)] public float lateralDamping = 0.25f; // réduit l’oscillation pendant la traction
+    public float snapDistance = 0.4f;            // quand on est assez proche, on “s’accroche”
+    public float gravityDuringPull = 0.2f;       // mini gravité pendant le pull
 
     [Header("Accroche (phase latched)")]
-    public float holdDistance = 0.25f;
-    public float gravityWhileLatched = 0f;
-    public bool freezeVelocityOnLatch = true;
+    public float holdDistance = 0.25f;           // distance de repos de la corde une fois accroché
+    public float gravityWhileLatched = 0f;       // 0 = reste collé/suspendu
+    public bool freezeVelocityOnLatch = true;    // met la vélocité à 0 quand on s’accroche
 
     [Header("Rope Render")]
     public Material ropeMaterial;
@@ -34,7 +29,7 @@ public class GrappleAbilitySO : AbilitySO
     public int ropeSortingLayerID = 0;
     public int ropeSortingOrder = 25;
     public float missPreviewWidth = 0.02f;
-    public Color missPreviewColor = new Color(1f,1f,1f,0.75f);
+    public Color missPreviewColor = new Color(1f, 1f, 1f, 0.75f);
     public float missPreviewTime = 0.2f;
 
     public override AbilityRuntime CreateRuntime(GameObject owner, MonoBehaviour host)
@@ -44,6 +39,7 @@ public class GrappleAbilitySO : AbilitySO
     {
         enum State { None, Pulling, Latched }
         readonly GrappleAbilitySO G;
+        readonly PlayerController pc;
 
         State state = State.None;
         DistanceJoint2D joint;
@@ -52,21 +48,18 @@ public class GrappleAbilitySO : AbilitySO
 
         Vector2 anchorPoint;
         float originalGravity;
-
-        // progress tracking
-        float pullTime;
-        float lastDist;
-        float noProgressTimer;
-
-        public override bool IsExclusive => true;
+        bool exclusive = true; // reste exclusif tant que le grappin est actif
+        public override bool IsExclusive => exclusive;
 
         public Runtime(GrappleAbilitySO s, GameObject owner, MonoBehaviour host) : base(s, owner, host)
         {
             G = s;
+            pc = owner.GetComponent<PlayerController>();
         }
 
         public override void Use(Vector2 aimDir)
         {
+            // direction : comme le dash (stick droit / touches), fallback au facing
             if (aimDir.sqrMagnitude < 0.0001f)
             {
                 var ac = host as AbilityController;
@@ -81,7 +74,9 @@ public class GrappleAbilitySO : AbilitySO
             var hit = Physics2D.Raycast(origin, dir, G.maxDistance, mask);
             if (!hit.collider)
             {
+                // Miss + preview
                 if (G.showPreviewOnMiss) ShowMissPreview(origin, origin + dir * G.maxDistance);
+                // On reste inactif (l’AbilityController a déjà consommé l’usage si tu l’as configuré ainsi)
                 return;
             }
 
@@ -92,7 +87,7 @@ public class GrappleAbilitySO : AbilitySO
             // Rope renderer
             rope = CreateLR("GrappleRope", G.ropeWidth, G.ropeColor, G.ropeMaterial, G.ropeSortingLayerID, G.ropeSortingOrder);
 
-            // Joint (activÃ© seulement quand on â€œlatchedâ€)
+            // DistanceJoint pour la phase latched (créé dès maintenant, mais on ajuste à la fin)
             joint = owner.AddComponent<DistanceJoint2D>();
             joint.enableCollision = false;
             joint.autoConfigureDistance = false;
@@ -100,25 +95,22 @@ public class GrappleAbilitySO : AbilitySO
             joint.connectedAnchor = hit.point;
             joint.distance = Mathf.Max(G.holdDistance, 0.01f);
             joint.maxDistanceOnly = false;
-            joint.enabled = false;
+            joint.enabled = false; // on n’active qu’à la phase latched
 
             anchorPoint = hit.point;
             state = State.Pulling;
+            exclusive = true;
             active = true;
 
-            pullTime = 0f;
-            lastDist = Vector2.Distance(rb.position, anchorPoint);
-            noProgressTimer = 0f;
-
-            loopCo = host.StartCoroutine(MainLoop(mask));
+            loopCo = host.StartCoroutine(MainLoop());
         }
 
-        IEnumerator MainLoop(int mask)
+        IEnumerator MainLoop()
         {
             var wait = new WaitForFixedUpdate();
             while (active)
             {
-                // MAJ corde
+                // MAJ corde visuelle
                 if (rope != null)
                 {
                     rope.SetPosition(0, rb.position + new Vector2(0f, G.castOriginYOffset));
@@ -127,45 +119,12 @@ public class GrappleAbilitySO : AbilitySO
 
                 if (state == State.Pulling)
                 {
-                    // SÃ©curitÃ©: timeout
-                    pullTime += Time.fixedDeltaTime;
-                    if (G.maxPullDuration > 0f && pullTime >= G.maxPullDuration)
-                    {
-                        Cancel();
-                        yield return wait; // next frame clean
-                        continue;
-                    }
-
-                    // SÃ©curitÃ©: ligne de vue perdue ?
-                    if (G.cancelIfLineBlocked)
-                    {
-                        var los = Physics2D.Linecast(rb.position, anchorPoint, mask);
-                        if (los.collider && (los.point - anchorPoint).sqrMagnitude > 0.0001f)
-                        {
-                            Cancel();
-                            yield return wait;
-                            continue;
-                        }
-                    }
-
-                    // Pull
+                    // Force vers l’ancre
                     Vector2 toAnchor = (anchorPoint - rb.position);
                     float dist = toAnchor.magnitude;
                     Vector2 dir = (dist > 0.0001f) ? toAnchor / dist : Vector2.zero;
 
-                    // ProgrÃ¨s ?
-                    if (dist < lastDist - 0.005f) noProgressTimer = 0f;
-                    else noProgressTimer += Time.fixedDeltaTime;
-                    lastDist = dist;
-
-                    if (G.maxNoProgressTime > 0f && noProgressTimer >= G.maxNoProgressTime)
-                    {
-                        Cancel(); // bloquÃ©
-                        yield return wait;
-                        continue;
-                    }
-
-                    // ArrivÃ© ?
+                    // Arrivé ?
                     if (dist <= Mathf.Max(G.snapDistance, G.holdDistance))
                     {
                         EnterLatched();
@@ -173,10 +132,10 @@ public class GrappleAbilitySO : AbilitySO
                         continue;
                     }
 
-                    // AccÃ©lÃ¨re vers lâ€™ancre
+                    // Accélère vers l’ancre
                     rb.AddForce(dir * G.pullAcceleration * Time.fixedDeltaTime, ForceMode2D.Impulse);
 
-                    // Clamp vitesse parallÃ¨le
+                    // Clamp vitesse parallèle
                     Vector2 v = rb.velocity;
                     float vPar = Vector2.Dot(v, dir);
                     if (vPar > G.maxPullSpeed)
@@ -185,7 +144,7 @@ public class GrappleAbilitySO : AbilitySO
                         rb.AddForce(-dir * excess, ForceMode2D.Impulse);
                     }
 
-                    // Damping latÃ©ral
+                    // Damping latéral
                     if (G.lateralDamping > 0f)
                     {
                         Vector2 vParVec = vPar * dir;
@@ -193,9 +152,11 @@ public class GrappleAbilitySO : AbilitySO
                         rb.AddForce(-vLat * G.lateralDamping * Time.fixedDeltaTime, ForceMode2D.Impulse);
                     }
                 }
-                else // Latched
+                else if (state == State.Latched)
                 {
+                    // Accroché : immobilisé (MovementOverride), gravité réduite/0
                     if (G.freezeVelocityOnLatch) rb.velocity = Vector2.zero;
+                    // On n’applique pas de forces : le joint maintient la position
                 }
 
                 yield return wait;
@@ -219,8 +180,10 @@ public class GrappleAbilitySO : AbilitySO
         public override bool OnJumpPressed()
         {
             if (!active) return false;
-            Cancel(); // dÃ©croche
-            return true;
+
+            // Le saut “décroche” (comme demandé).
+            Cancel();
+            return true; // on consomme le saut (et laisse SimpleJump éventuellement sauter ensuite)
         }
 
         public override void ForceCancelForTransfer()
@@ -247,6 +210,11 @@ public class GrappleAbilitySO : AbilitySO
 
             if (preview) Object.Destroy(preview.gameObject);
             preview = null;
+
+            state = State.None;
+            exclusive = false;
+
+            pc?.SetSwinging(false); // au cas où tu utilises des états visuels
         }
 
         // --- Helpers visuels ---
@@ -255,7 +223,7 @@ public class GrappleAbilitySO : AbilitySO
             if (previewCo != null) { host.StopCoroutine(previewCo); previewCo = null; }
             if (preview) { Object.Destroy(preview.gameObject); preview = null; }
 
-            preview = CreateLR("GrappleMiss", G.missPreviewWidth, G.missPreviewColor, G.ropeMaterial, G.ropeSortingLayerID, G.ropeSortingOrder+1);
+            preview = CreateLR("GrappleMiss", G.missPreviewWidth, G.missPreviewColor, G.ropeMaterial, G.ropeSortingLayerID, G.ropeSortingOrder + 1);
             preview.SetPosition(0, a);
             preview.SetPosition(1, b);
 
@@ -271,7 +239,7 @@ public class GrappleAbilitySO : AbilitySO
             {
                 float a = Mathf.Clamp01(1f - t / G.missPreviewTime);
                 preview.startColor = new Color(c0.r, c0.g, c0.b, a * c0.a);
-                preview.endColor   = new Color(c1.r, c1.g, c1.b, a * c1.a);
+                preview.endColor = new Color(c1.r, c1.g, c1.b, a * c1.a);
                 t += Time.deltaTime;
                 yield return wait;
             }
@@ -298,3 +266,4 @@ public class GrappleAbilitySO : AbilitySO
         }
     }
 }
+

@@ -1,0 +1,38 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cf14512bf445dcc418389f56d48dbc90, type: 3}
+  m_Name: Grapple
+  m_EditorClassIdentifier: 
+  cooldown: 0
+  ammoMax: -1
+  maxDistance: 14
+  attachMask:
+    serializedVersion: 2
+    m_Bits: 128
+  castOriginYOffset: 0.15
+  showPreviewOnMiss: 1
+  pullAcceleration: 60
+  maxPullSpeed: 18
+  lateralDamping: 0.25
+  snapDistance: 0.4
+  gravityDuringPull: 0.2
+  holdDistance: 0.25
+  gravityWhileLatched: 0
+  freezeVelocityOnLatch: 1
+  ropeMaterial: {fileID: 0}
+  ropeWidth: 0.04
+  ropeColor: {r: 0.46226418, g: 0.46226418, b: 0.46226418, a: 1}
+  ropeSortingLayerID: 0
+  ropeSortingOrder: 25
+  missPreviewWidth: 0.02
+  missPreviewColor: {r: 1, g: 1, b: 1, a: 0.75}
+  missPreviewTime: 0.2

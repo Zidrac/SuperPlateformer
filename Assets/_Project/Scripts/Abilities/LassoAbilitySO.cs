@@ -1,4 +1,4 @@
-using UnityEngine;
+﻿using UnityEngine;
 using System.Collections;
 
 [CreateAssetMenu(menuName = "Abilities/Lasso")]
@@ -22,7 +22,7 @@ public class LassoAbilitySO : AbilitySO
     public float previewDuration = 0.25f;
     public float previewWidth = 0.025f;
     public Color previewColor = new Color(1f, 1f, 1f, 0.8f);
-    public bool applyCooldownOnMiss = false;     // Le CD est géré côté Controller
+    public bool applyCooldownOnMiss = false;     // ATTENTION: avec la nouvelle archi, le CD se gère côté Controller
 
     [Header("Pendule naturel")]
     public float gravityMultWhileSwing = 1.15f;
@@ -32,11 +32,14 @@ public class LassoAbilitySO : AbilitySO
     [Range(40f, 179f)] public float hardArcDeg = 140f;
     public float angleBufferDeg = 0.5f;
 
-    [Header("Jump: bump le long de la tangente / trajectoire")]
+    [Header("Jump: impulsion purement horizontale à la sortie")]
+    public float jumpHorizontalImpulse = 10f;    // + fort & horizontal
+
+    [Header("Jump → Bump le long de la tangente (trajectoire)")]
     public bool jumpAddsBump = true;
-    public float bumpImpulse = 8f;
-    [Range(0f, 1f)] public float bumpVelocityBias = 0.25f;
-    public float bumpMaxResultSpeed = 24f;
+    public float bumpImpulse = 7f;               // un peu plus costaud que le dash, à ton goût
+    [Range(0f, 1f)] public float bumpVelocityBias = 0.25f; // 0 = 100% tangente, 1 = tire vers vélocité actuelle
+    public float bumpMaxResultSpeed = 22f;       // clamp (0 = off)
 
     public override AbilityRuntime CreateRuntime(GameObject owner, MonoBehaviour host)
         => new LassoRuntime(this, owner, host);
@@ -45,6 +48,7 @@ public class LassoAbilitySO : AbilitySO
 public class LassoRuntime : AbilityRuntime
 {
     readonly LassoAbilitySO L;
+    readonly PlayerController pc;
 
     DistanceJoint2D joint;
     LineRenderer rope, preview;
@@ -57,6 +61,7 @@ public class LassoRuntime : AbilityRuntime
     public LassoRuntime(LassoAbilitySO data, GameObject owner, MonoBehaviour host) : base(data, owner, host)
     {
         L = data;
+        pc = owner.GetComponent<PlayerController>();
     }
 
     public override void Use(Vector2 aimDir)
@@ -78,6 +83,8 @@ public class LassoRuntime : AbilityRuntime
         }
         else
         {
+            // Avec l’archi actuelle, le cooldown/munitions sont gérés par AbilityController.
+            // Optionnel: si tu veux “punir” le miss, applique le CD depuis le Controller.
             if (L.showPreviewOnMiss) ShowPreview(from, from + diag * L.maxLength);
         }
     }
@@ -97,16 +104,17 @@ public class LassoRuntime : AbilityRuntime
         if (Mathf.Abs(sign) < 0.001f) sign = (rb.velocity.x >= 0f) ? 1f : -1f;
         Vector2 trajDir = tangent * sign; // direction de trajectoire
 
-        // Cancel du lasso AVANT de pousser
+        // Petit biais vers la vélocité actuelle si demandé
+        if (L.bumpVelocityBias > 0f && rb.velocity.sqrMagnitude > 0.0001f)
+        {
+            trajDir = Vector2.Lerp(trajDir, rb.velocity.normalized, L.bumpVelocityBias).normalized;
+        }
+
+        // Cancel du lasso AVANT de pousser (pour rendre la main à la physique tout de suite)
         Cancel();
 
-        // Bump
         if (L.jumpAddsBump)
         {
-            if (L.bumpVelocityBias > 0f && rb.velocity.sqrMagnitude > 0.0001f)
-            {
-                trajDir = Vector2.Lerp(trajDir, rb.velocity.normalized, L.bumpVelocityBias).normalized;
-            }
             rb.AddForce(trajDir * L.bumpImpulse, ForceMode2D.Impulse);
             if (L.bumpMaxResultSpeed > 0f)
             {
@@ -115,7 +123,7 @@ public class LassoRuntime : AbilityRuntime
                     rb.velocity = rb.velocity.normalized * L.bumpMaxResultSpeed;
             }
         }
-        return true;
+        return true; // on "consomme" le saut
     }
 
     public override void ForceCancelForTransfer()
@@ -141,11 +149,13 @@ public class LassoRuntime : AbilityRuntime
         savedGravity = rb.gravityScale;
         rb.gravityScale = Mathf.Max(0.01f, savedGravity * L.gravityMultWhileSwing);
 
+        pc?.SetSwinging(true, 0f, 0f);
+
         // Assure une vitesse tangentielle mini à l'accroche
         Vector2 toAnchor = (anchor - rb.position);
-        Vector2 ropeDir  = toAnchor.normalized;
-        Vector2 tangent  = new Vector2(-ropeDir.y, ropeDir.x);
-        float   vt       = Vector2.Dot(rb.velocity, tangent);
+        Vector2 ropeDir = toAnchor.normalized;
+        Vector2 tangent = new Vector2(-ropeDir.y, ropeDir.x);
+        float vt = Vector2.Dot(rb.velocity, tangent);
 
         float sign = (Mathf.Abs(vt) > 0.01f) ? Mathf.Sign(vt)
                    : (Mathf.Abs(aimDir.x) > 0.1f ? Mathf.Sign(aimDir.x) : 1f);
@@ -173,9 +183,9 @@ public class LassoRuntime : AbilityRuntime
                 rope.SetPosition(1, joint.connectedAnchor);
             }
 
-            // Anti-360
+            // Anti-360 (blocage doux dans un cône)
             Vector2 fromAnchor = (rb.position - joint.connectedAnchor);
-            Vector2 u   = fromAnchor.normalized;
+            Vector2 u = fromAnchor.normalized;
             Vector2 tCCW = Vector2.Perpendicular(u);
             float angle = Vector2.SignedAngle(Vector2.down, u);
 
@@ -197,10 +207,11 @@ public class LassoRuntime : AbilityRuntime
         active = false;
         if (ropeCo != null) { host.StopCoroutine(ropeCo); ropeCo = null; }
 
-        // Restaure la gravité
+        // Restaure la gravité avant de supprimer le joint
         rb.gravityScale = savedGravity;
 
         Cleanup();
+        pc?.SetSwinging(false);
     }
 
     void Cleanup()
@@ -237,7 +248,7 @@ public class LassoRuntime : AbilityRuntime
         {
             float a = Mathf.Clamp01(1f - (t / L.previewDuration));
             preview.startColor = new Color(c0.r, c0.g, c0.b, a * c0.a);
-            preview.endColor   = new Color(c1.r, c1.g, c1.b, a * c1.a);
+            preview.endColor = new Color(c1.r, c1.g, c1.b, a * c1.a);
             t += Time.deltaTime;
             yield return wait;
         }
@@ -264,3 +275,24 @@ public class LassoRuntime : AbilityRuntime
         return lr;
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

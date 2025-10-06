@@ -1,7 +1,7 @@
 ﻿using UnityEngine;
 using System.Collections;
 
-[CreateAssetMenu(menuName = "Abilities/Dash")]
+[CreateAssetMenu(menuName = "Abilities/Dash (360)")]
 public class DashAbilitySO : AbilitySO
 {
     [Header("Dash")]

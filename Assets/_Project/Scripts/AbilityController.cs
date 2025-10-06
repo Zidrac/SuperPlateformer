@@ -1,14 +1,16 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 [RequireComponent(typeof(Rigidbody2D))]
 public class AbilityController : MonoBehaviour
 {
     [Header("Refs")]
     [SerializeField] private Rigidbody2D rb;
+    [SerializeField] private PlayerController player; // optionnel
 
-    [Header("Equip (2 slots)")]
-    public AbilitySO slotA;   // ex: Dash
-    public AbilitySO slotB;   // ex: Lasso/Grapple
+    [Header("Abilities")]
+    public AbilitySO dashAbility;
+    public AbilitySO lassoAbility;
+    public AbilitySO grappleAbility;                // NOUVEAU
 
     [Header("Refill")]
     [SerializeField] private bool refillAmmoOnGround = true;
@@ -23,22 +25,23 @@ public class AbilityController : MonoBehaviour
     public bool IsGrounded => isGrounded;
     public System.Action<bool> OnGroundedChanged;
 
-    public System.Action OnAbilityStarted; // pour SimpleJump (reset jump)
+    public System.Action OnAbilityStarted; // reset jump côté SimpleJump
 
     public bool MovementOverride => current != null && current.IsExclusive && current.IsActive;
 
-    // Flags refill conditionnel
-    bool slotASpentSinceGround, slotBSpentSinceGround;
+    // Spent flags (recharge conditionnelle)
+    bool dashSpentSinceGround, lassoSpentSinceGround, grappleSpentSinceGround;
 
-    void Reset() { rb = GetComponent<Rigidbody2D>(); }
-    void Awake() { if (!rb) rb = GetComponent<Rigidbody2D>(); }
+    void Reset() { rb = GetComponent<Rigidbody2D>(); player = GetComponent<PlayerController>(); }
+    void Awake() { if (!rb) rb = GetComponent<Rigidbody2D>(); if (!player) player = GetComponent<PlayerController>(); }
 
     void Update()
     {
         if (current != null && !current.IsActive)
         {
             if (refillWhileGroundedOnAbilityEnd && isGrounded) RefillFor(currentSO);
-            current = null; currentSO = null;
+            current = null;
+            currentSO = null;
         }
     }
 
@@ -47,9 +50,48 @@ public class AbilityController : MonoBehaviour
         if (current != null) { current.ForceCancelForTransfer(); current = null; currentSO = null; }
     }
 
-    // ---------- Public API ----------
-    public void TriggerSlotA(Vector2 aimDir) => TriggerSlot(slotA, ref slotASpentSinceGround, aimDir);
-    public void TriggerSlotB(Vector2 aimDir) => TriggerSlot(slotB, ref slotBSpentSinceGround, aimDir);
+    // --------- Triggers ----------
+    public void TriggerDash(Vector2 aimDir)
+    {
+        if (!dashAbility || !dashAbility.IsReady()) return;
+        CancelCurrent();
+
+        var rt = dashAbility.CreateRuntime(gameObject, this);
+        rt.Use(aimDir);
+        dashAbility.MarkUsed();
+        dashSpentSinceGround |= (dashAbility.ammoMax >= 0);
+
+        current = rt; currentSO = dashAbility;
+        OnAbilityStarted?.Invoke();
+    }
+
+    public void TriggerLasso(Vector2 aimDir)
+    {
+        if (!lassoAbility || !lassoAbility.IsReady()) return;
+        CancelCurrent();
+
+        var rt = lassoAbility.CreateRuntime(gameObject, this);
+        rt.Use(aimDir);
+        lassoAbility.MarkUsed();
+        lassoSpentSinceGround |= (lassoAbility.ammoMax >= 0);
+
+        current = rt; currentSO = lassoAbility;
+        OnAbilityStarted?.Invoke();
+    }
+
+    public void TriggerGrapple(Vector2 aimDir) // NEW
+    {
+        if (!grappleAbility || !grappleAbility.IsReady()) return;
+        CancelCurrent();
+
+        var rt = grappleAbility.CreateRuntime(gameObject, this);
+        rt.Use(aimDir);
+        grappleAbility.MarkUsed();
+        grappleSpentSinceGround |= (grappleAbility.ammoMax >= 0);
+
+        current = rt; currentSO = grappleAbility;
+        OnAbilityStarted?.Invoke();
+    }
 
     public void CancelCurrent()
     {
@@ -75,39 +117,44 @@ public class AbilityController : MonoBehaviour
         {
             if (refillAmmoOnGround)
             {
-                if (slotASpentSinceGround) { RefillAmmo(slotA); slotASpentSinceGround = false; }
-                if (slotBSpentSinceGround) { RefillAmmo(slotB); slotBSpentSinceGround = false; }
+                if (dashSpentSinceGround) { RefillAmmo(dashAbility); dashSpentSinceGround = false; }
+                if (lassoSpentSinceGround) { RefillAmmo(lassoAbility); lassoSpentSinceGround = false; }
+                if (grappleSpentSinceGround) { RefillAmmo(grappleAbility); grappleSpentSinceGround = false; }
             }
             if (resetCooldownOnGround)
             {
-                ResetCooldown(slotA);
-                ResetCooldown(slotB);
+                ResetCooldown(dashAbility);
+                ResetCooldown(lassoAbility);
+                ResetCooldown(grappleAbility);
             }
         }
     }
 
-    // ---------- Helpers ----------
-    void TriggerSlot(AbilitySO so, ref bool spentFlag, Vector2 aimDir)
-    {
-        if (!so || !so.IsReady()) return;
-        if (current != null) { current.ForceCancelForTransfer(); current = null; currentSO = null; }
-
-        var rt = so.CreateRuntime(gameObject, this);
-        rt.Use(aimDir);
-        so.MarkUsed();
-        spentFlag |= (so.ammoMax >= 0);
-
-        current = rt; currentSO = so;
-        OnAbilityStarted?.Invoke(); // reset jump
-    }
-
+    // --------- Helpers ----------
     void RefillAmmo(AbilitySO so) { if (so != null && so.ammoMax >= 0) so.ammoCurrent = so.ammoMax; }
     void ResetCooldown(AbilitySO so) { if (so != null) so.lastUseAt = -999f; }
 
     void RefillFor(AbilitySO so)
     {
         if (!refillAmmoOnGround || so == null) return;
-        if (so == slotA && slotASpentSinceGround) { RefillAmmo(so); slotASpentSinceGround = false; }
-        if (so == slotB && slotBSpentSinceGround) { RefillAmmo(so); slotBSpentSinceGround = false; }
+        if (so == dashAbility && dashSpentSinceGround) { RefillAmmo(so); dashSpentSinceGround = false; }
+        if (so == lassoAbility && lassoSpentSinceGround) { RefillAmmo(so); lassoSpentSinceGround = false; }
+        if (so == grappleAbility && grappleSpentSinceGround) { RefillAmmo(so); grappleSpentSinceGround = false; }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
