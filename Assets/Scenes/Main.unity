@@ -1459,7 +1459,7 @@ MonoBehaviour:
   abilityCtrl: {fileID: 1923147194}
   useDesiredHeight: 1
   desiredJumpHeight: 3
-  jumpImpulse: 12
+  jumpImpulse: 15
   maxAirJumps: 0
   coyoteTime: 0.1
   jumpBufferTime: 0.12
